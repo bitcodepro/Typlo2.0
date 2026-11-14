@@ -12,6 +12,55 @@ use typlo_rust::{
     locale,
 };
 
+#[cfg(windows)]
+fn diagnostic_clock(timestamp_ms: u64) -> Option<String> {
+    use windows_sys::Win32::{
+        Foundation::{FILETIME, SYSTEMTIME},
+        System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTimeEx},
+    };
+
+    const UNIX_EPOCH_FILETIME: u64 = 116_444_736_000_000_000;
+    let ticks = timestamp_ms
+        .checked_mul(10_000)?
+        .checked_add(UNIX_EPOCH_FILETIME)?;
+    let file_time = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut local = SYSTEMTIME::default();
+    if unsafe { FileTimeToSystemTime(&file_time, &mut utc) } == 0
+        || unsafe { SystemTimeToTzSpecificLocalTimeEx(std::ptr::null(), &utc, &mut local) } == 0
+    {
+        return None;
+    }
+    Some(format!(
+        "{:02}:{:02}:{:02}",
+        local.wHour, local.wMinute, local.wSecond
+    ))
+}
+
+#[cfg(windows)]
+struct SettingsDiagnostics {
+    report: typlo_rust::windows::DiagnosticReport,
+    attempt_clocks: Vec<Option<String>>,
+}
+
+#[cfg(windows)]
+impl SettingsDiagnostics {
+    fn new(report: typlo_rust::windows::DiagnosticReport) -> Self {
+        let attempt_clocks = report
+            .automatic
+            .iter()
+            .map(|attempt| diagnostic_clock(attempt.timestamp_ms))
+            .collect();
+        Self {
+            report,
+            attempt_clocks,
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run().inspect_err(|error| {
         typlo_rust::runtime_log::write("ERROR", format_args!("UI failed: {error}"));
@@ -275,7 +324,7 @@ struct Workspace {
     #[cfg(windows)]
     resident_memory: Option<(usize, usize)>,
     #[cfg(windows)]
-    diagnostics: Option<typlo_rust::windows::DiagnosticReport>,
+    diagnostics: Option<SettingsDiagnostics>,
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     updates: typlo_rust::update_view::UpdateView,
 }
@@ -406,7 +455,8 @@ impl Workspace {
         #[cfg(windows)]
         let diagnostics = (page == Page::Tools)
             .then(|| typlo_rust::windows::resident_diagnostics(&profile, false))
-            .and_then(Result::ok);
+            .and_then(Result::ok)
+            .map(SettingsDiagnostics::new);
         Self {
             page,
             tab: SettingsTab::default(),
@@ -1409,7 +1459,7 @@ impl Workspace {
     fn refresh_diagnostics(&mut self, retry: bool) {
         self.resident_memory = typlo_rust::windows::resident_memory().ok();
         match typlo_rust::windows::resident_diagnostics(&self.profile, retry) {
-            Ok(report) => self.diagnostics = Some(report),
+            Ok(report) => self.diagnostics = Some(SettingsDiagnostics::new(report)),
             Err(error) => {
                 self.diagnostics = None;
                 if retry {
@@ -1442,14 +1492,14 @@ impl Workspace {
                         self.refresh_diagnostics(true);
                     }
                 });
-                let Some(report) = &self.diagnostics else {
+                let Some(diagnostics) = &self.diagnostics else {
                     ui.weak(tr(
                         "rust.tools.noDiagnostics",
                         "Typlo diagnostics are unavailable.",
                     ));
                     return;
                 };
-                if let Some(healthy) = report.dictionary_healthy {
+                if let Some(healthy) = diagnostics.report.dictionary_healthy {
                     ui.label(if healthy {
                         tr("rust.dictionary.healthy", "Dictionary check passed")
                     } else {
@@ -1466,18 +1516,21 @@ impl Workspace {
                     .id_salt("automatic-attempts")
                     .max_height(240.)
                     .show(ui, |ui| {
-                        for attempt in &report.automatic {
-                            let age = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis()
-                                .saturating_sub(attempt.timestamp_ms as u128)
-                                / 1000;
+                        for (attempt, clock) in diagnostics
+                            .report
+                            .automatic
+                            .iter()
+                            .zip(&diagnostics.attempt_clocks)
+                        {
                             ui.label(format!(
-                                "{age}s · {} → {} · {:.2} ms · {}",
+                                "{} · {:.2} ms",
+                                clock.as_deref().unwrap_or("—"),
+                                attempt.elapsed_us as f64 / 1000.,
+                            ))
+                            .on_hover_text(format!(
+                                "{} → {} · {}",
                                 code(attempt.source),
                                 code(attempt.target),
-                                attempt.elapsed_us as f64 / 1000.,
                                 attempt.reason.message()
                             ));
                         }
@@ -1523,7 +1576,8 @@ impl Workspace {
             .replace("{1}", &format!("{:.1}", private as f64 / 1048576.));
             ui.label(text);
         }
-        if let Some(report) = &self.diagnostics {
+        if let Some(diagnostics) = &self.diagnostics {
+            let report = &diagnostics.report;
             if let Some(summary) = report.latest_summary() {
                 ui.label(summary);
             }

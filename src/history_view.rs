@@ -501,6 +501,12 @@ impl eframe::App for Window {
         self.poll_received_size();
         self.poll_legacy_size(root.ctx());
         self.poll_thumbnail(root.ctx());
+        // Reserve Enter before egui can use it to activate a focused button.
+        let paste = if self.delete_received.is_none() && self.edit.is_none() {
+            history_paste_key(root)
+        } else {
+            None
+        };
         let palette = Palette::new(root.visuals().dark_mode);
         egui::Frame::new().fill(palette.panel)
             .stroke(egui::Stroke::new(1_f32, palette.border)).corner_radius(12)
@@ -508,7 +514,7 @@ impl eframe::App for Window {
                 ui.set_min_size(ui.available_size());
                 self.search_box(ui, &palette);
                 self.received_filter(ui);
-                let command = if self.delete_received.is_some() || self.edit.is_some() { None } else { self.keys(ui) };
+                let command = if self.delete_received.is_some() || self.edit.is_some() { None } else { self.keys(ui, paste) };
                 let footer = tr("history.hints", "Enter paste · Shift+Enter plain · Ctrl+T text from image · Ctrl+P pin · Del delete · right click: more");
                 egui::Panel::bottom("history-footer")
                     .resizable(false)
@@ -831,7 +837,7 @@ impl Window {
         self.select_search_result = self.selected.is_none() && self.filtered();
     }
 
-    fn keys(&mut self, ui: &egui::Ui) -> Option<Choice> {
+    fn keys(&mut self, ui: &egui::Ui, paste: Option<bool>) -> Option<Choice> {
         use egui::{Key, Modifiers as M};
         let key = |mods, key| ui.input_mut(|input| input.consume_key(mods, key));
         let delta = [
@@ -873,10 +879,8 @@ impl Window {
                 .map(|entry| Choice::Paste(entry.id, false));
         }
         let entry = self.items().get(self.selected_index()?)?;
-        if key(M::SHIFT, Key::Enter) {
-            Some(Choice::Paste(entry.id, true))
-        } else if key(M::NONE, Key::Enter) {
-            Some(Choice::Paste(entry.id, false))
+        if let Some(plain) = paste {
+            Some(Choice::Paste(entry.id, plain))
         } else if key(M::CTRL, Key::O) {
             Some(Choice::View(entry.id))
         } else if key(M::CTRL, Key::T) && entry.kind == Kind::Image {
@@ -2002,6 +2006,28 @@ fn history_search_input(query: &mut String) -> egui::TextEdit<'_> {
     egui::TextEdit::singleline(query).return_key(None)
 }
 
+fn history_paste_key(ui: &egui::Ui) -> Option<bool> {
+    use egui::{Event, Key, Modifiers};
+    ui.input_mut(|input| {
+        let mut paste = None;
+        input.events.retain(|event| {
+            if let Event::Key {
+                key: Key::Enter,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+                && (modifiers.is_none() || modifiers.matches_exact(Modifiers::SHIFT))
+            {
+                paste.get_or_insert(modifiers.shift);
+                return false;
+            }
+            true
+        });
+        paste
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2034,10 +2060,39 @@ mod tests {
                     ui.add(history_search_input(&mut query).id(field))
                         .has_focus()
                 );
-                assert!(ui.input_mut(|input| input.consume_key(modifiers, Key::Enter)));
+                assert_eq!(history_paste_key(ui), Some(modifiers.shift));
             });
         }
         assert_eq!(query, "fixture");
+    }
+
+    #[test]
+    fn paste_shortcuts_do_not_activate_focused_history_buttons() {
+        use egui::{Event, Key, Modifiers, RawInput};
+
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(RawInput::default(), |ui| {
+            ui.selectable_label(false, "Received files").request_focus();
+        });
+        for modifiers in [Modifiers::NONE, Modifiers::SHIFT] {
+            let input = RawInput {
+                modifiers,
+                events: vec![Event::Key {
+                    key: Key::Enter,
+                    physical_key: Some(Key::Enter),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                assert_eq!(history_paste_key(ui), Some(modifiers.shift));
+                let filter = ui.selectable_label(false, "Received files");
+                assert!(filter.has_focus());
+                assert!(!filter.clicked());
+            });
+        }
     }
 
     fn search_limits() -> Limits {
