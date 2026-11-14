@@ -21,13 +21,13 @@ use windows_sys::Win32::{
 
 pub(crate) const ASSET: &str = "typlo-win-x64.zip";
 pub const RESIDENT_EXE: &str = "Typlo.exe";
+pub const PACKAGE_BINARIES: [&str; 2] = [RESIDENT_EXE, "typlo-settings.exe"];
 const LEGACY_LAUNCHER: &str = "typlo-rust.exe";
 const MARKER: &str = "rust-current.txt";
 pub(super) const SHUTDOWN_FOR_UPDATE: usize = 0x5459;
 #[cfg(test)]
-const REQUIRED: [&str; 10] = [
+const REQUIRED: [&str; 9] = [
     "Typlo.exe",
-    "typlo-rust.exe",
     "typlo-settings.exe",
     "resources/language-detection/words.sqlite3",
     "resources/spelling/en_US.aff",
@@ -301,13 +301,7 @@ pub fn temporary_workspace() -> io::Result<tempfile::TempDir> {
 }
 
 fn stage(root: &Path, archive: &Path, version: &str, digest: &str) -> io::Result<PathBuf> {
-    update_package::stage(
-        root,
-        archive,
-        version,
-        digest,
-        [RESIDENT_EXE, "typlo-settings.exe", LEGACY_LAUNCHER],
-    )
+    update_package::stage(root, archive, version, digest, PACKAGE_BINARIES)
 }
 
 pub fn verify_package(archive: &Path, version: &str, digest: &str) -> io::Result<()> {
@@ -550,8 +544,8 @@ mod tests {
     }
 
     #[test]
-    fn renamed_archive_requires_primary_settings_and_legacy_shortcut_launcher() {
-        for missing in [RESIDENT_EXE, "typlo-settings.exe", LEGACY_LAUNCHER] {
+    fn archive_requires_primary_and_settings_without_a_legacy_launcher() {
+        for missing in PACKAGE_BINARIES {
             let root = tempfile::tempdir().unwrap();
             let file = root.path().join("incomplete.zip");
             let mut archive = ZipWriter::new(File::create(&file).unwrap());
@@ -569,6 +563,28 @@ mod tests {
             );
             assert!(!root.path().join("versions/0.1.8").exists());
         }
+    }
+
+    #[test]
+    fn archive_rejects_legacy_executable_even_with_a_matching_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("with-shim.zip");
+        let mut archive = ZipWriter::new(File::create(&file).unwrap());
+        for name in REQUIRED.into_iter().chain([LEGACY_LAUNCHER]) {
+            archive
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(name.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+        let hash = format!("{:x}", Sha256::digest(fs::read(&file).unwrap()));
+        let error = stage(root.path(), &file, "0.2.0", &hash).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Unsafe or oversized update entry")
+        );
+        assert!(!root.path().join("versions/0.2.0").exists());
     }
 
     #[test]

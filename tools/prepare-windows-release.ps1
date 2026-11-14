@@ -11,8 +11,7 @@ if ((Test-Path $payload) -or (Test-Path $output)) { throw 'Package/output direct
 [void](New-Item -ItemType Directory -Path $payload)
 Copy-Item resources $payload -Recurse
 Copy-Item README.md,LICENSE $payload
-$renamed = Test-Path (Join-Path $root 'src/bin/typlo.rs')
-$binaries = if ($renamed) { @('Typlo.exe', 'typlo-settings.exe', 'typlo-rust.exe') } else { @('typlo-rust.exe', 'typlo-settings.exe') }
+$binaries = @(Get-WindowsPackageBinaries $root)
 foreach ($name in $binaries) {
     $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
     $builtName = if ($name -ceq 'Typlo.exe') { 'typlo.exe' } else { $name }

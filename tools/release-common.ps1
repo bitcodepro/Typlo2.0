@@ -1,4 +1,13 @@
 $ErrorActionPreference = 'Stop'
+function Get-WindowsPackageBinaries {
+    param([string]$Root)
+    # The controller can build older queued commits; preserve each source's
+    # verifier contract instead of rewriting historical package contents.
+    if (!(Test-Path (Join-Path $Root 'src/bin/typlo.rs'))) { return @('typlo-rust.exe', 'typlo-settings.exe') }
+    $source = Get-Content (Join-Path $Root 'src/windows/update.rs') -Raw
+    if ($source.Contains('pub const PACKAGE_BINARIES: [&str; 2]')) { return @('Typlo.exe', 'typlo-settings.exe') }
+    return @('Typlo.exe', 'typlo-settings.exe', 'typlo-rust.exe')
+}
 function Test-WindowsImports {
     param([string[]]$Dlls)
     if (!$Dlls.Count) { throw 'No PE dependencies detected' }

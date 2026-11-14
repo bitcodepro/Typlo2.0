@@ -1,5 +1,15 @@
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/release-common.ps1"
+$layoutFixture = Join-Path ([IO.Path]::GetTempPath()) ('TyploLayoutTests-' + [guid]::NewGuid().ToString('N'))
+[void](New-Item -ItemType Directory "$layoutFixture/src/bin" -Force)
+[void](New-Item -ItemType Directory "$layoutFixture/src/windows" -Force)
+if ((@(Get-WindowsPackageBinaries $layoutFixture) -join ',') -cne 'typlo-rust.exe,typlo-settings.exe') { throw 'Historical pre-rename contract changed' }
+Set-Content "$layoutFixture/src/bin/typlo.rs" '// renamed source'
+Set-Content "$layoutFixture/src/windows/update.rs" '// historical three-EXE source'
+if ((@(Get-WindowsPackageBinaries $layoutFixture) -join ',') -cne 'Typlo.exe,typlo-settings.exe,typlo-rust.exe') { throw 'Historical v0.1.9 contract changed' }
+Set-Content "$layoutFixture/src/windows/update.rs" 'pub const PACKAGE_BINARIES: [&str; 2] = [RESIDENT_EXE, "typlo-settings.exe"];'
+if ((@(Get-WindowsPackageBinaries $layoutFixture) -join ',') -cne 'Typlo.exe,typlo-settings.exe') { throw 'Current package must exclude the Windows shim' }
+Write-Host 'PASS historical two/three-EXE source contracts and current shim-free layout'
 function Assert-Rejected([scriptblock]$Action) {
     $rejected = $false
     try { & $Action | Out-Null } catch { $rejected = $true }
